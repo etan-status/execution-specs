@@ -35,6 +35,7 @@ def test_frontier_block_hash() -> None:
         state_root=state_root,
         root=root,
         hex_to_address=hex_to_address,
+        empty_transactions_root=root(Trie(False, None)),
     )
 
     chain = BlockChain([], State(), U64(1))
@@ -63,6 +64,11 @@ def test_genesis(fork: Hardfork) -> None:
         state_root=fork.module("state").state_root,
         root=fork.module("trie").root,
         hex_to_address=fork.module("utils.hexadecimal").hex_to_address,
+        empty_transactions_root=
+            fork.module("blocks").Transactions().hash_tree_root()
+            if hasattr(fork.module("blocks"), "Transactions")
+            else fork.module("trie").root(
+                fork.module("trie").Trie(False, None)),
     )
 
     state = fork.module("state").State()

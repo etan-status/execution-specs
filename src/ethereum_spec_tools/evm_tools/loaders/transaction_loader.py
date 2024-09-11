@@ -135,23 +135,46 @@ class TransactionLoad:
 
     def get_legacy_transaction(self) -> Any:
         """Return the approprtiate class for legacy transactions."""
-        if hasattr(self.fork, "LegacyTransaction"):
+        if hasattr(self.fork, "LegacyRlpTransaction"):
+            return self.fork.LegacyRlpTransaction
+        elif hasattr(self.fork, "LegacyTransaction"):
             return self.fork.LegacyTransaction
         else:
             return self.fork.Transaction
+
+    def get_access_list_transaction(self) -> Any:
+        """Return the appropriate class for access list transactions."""
+        if hasattr(self.fork, "AccessListRlpTransaction"):
+            return self.fork.AccessListRlpTransaction
+        else:
+            return self.fork.AccessListTransaction
+
+    def get_fee_market_transaction(self) -> Any:
+        """Return the appropriate class for fee market transactions."""
+        if hasattr(self.fork, "FeeMarketRlpTransaction"):
+            return self.fork.FeeMarketRlpTransaction
+        else:
+            return self.fork.FeeMarketTransaction
+
+    def get_blob_transaction(self) -> Any:
+        """Return the appropriate class for blob transactions."""
+        if hasattr(self.fork, "BlobRlpTransaction"):
+            return self.fork.BlobRlpTransaction
+        else:
+            return self.fork.BlobTransaction
 
     def read(self) -> Any:
         """Convert json transaction data to a transaction object"""
         if "type" in self.raw:
             tx_type = self.raw.get("type")
             if tx_type == "0x3":
-                tx_cls = self.fork.BlobTransaction
+                tx_cls = self.get_blob_transaction()
                 tx_byte_prefix = b"\x03"
             elif tx_type == "0x2":
-                tx_cls = self.fork.FeeMarketTransaction
+                tx_cls = self.get_fee_market_transaction()
                 tx_byte_prefix = b"\x02"
             elif tx_type == "0x1":
-                tx_cls = self.fork.AccessListTransaction
+                tx_cls = self.get_access_list_transaction()
                 tx_byte_prefix = b"\x01"
             elif tx_type == "0x0":
                 tx_cls = self.get_legacy_transaction()
@@ -160,13 +183,13 @@ class TransactionLoad:
                 raise ValueError(f"Unknown transaction type: {tx_type}")
         else:
             if "maxFeePerBlobGas" in self.raw:
-                tx_cls = self.fork.BlobTransaction
+                tx_cls = self.get_blob_transaction()
                 tx_byte_prefix = b"\x03"
             elif "maxFeePerGas" in self.raw:
-                tx_cls = self.fork.FeeMarketTransaction
+                tx_cls = self.get_fee_market_transaction()
                 tx_byte_prefix = b"\x02"
             elif "accessList" in self.raw:
-                tx_cls = self.fork.AccessListTransaction
+                tx_cls = self.get_access_list_transaction()
                 tx_byte_prefix = b"\x01"
             else:
                 tx_cls = self.get_legacy_transaction()
@@ -174,8 +197,12 @@ class TransactionLoad:
 
         parameters = self.get_parameters(tx_cls)
         try:
-            return tx_cls(*parameters)
+            tx = tx_cls(*parameters)
         except Exception as e:
             raise UnsupportedTx(
                 tx_byte_prefix + rlp.encode(parameters), str(e)
             ) from e
+
+        if hasattr(self.fork, "upgrade_rlp_tx"):
+            tx = self.fork.encode_transaction(self.fork.upgrade_rlp_tx(tx))
+        return tx

@@ -210,7 +210,9 @@ class Txs:
         """
         Get the transaction hash of a transaction.
         """
-        if self.t8n.fork.is_after_fork("ethereum.berlin") and not isinstance(
+        if self.t8n.fork.is_after_fork("ethereum.prague"):
+            return self.t8n.fork.tx_hash(tx)
+        elif self.t8n.fork.is_after_fork("ethereum.berlin") and not isinstance(
             tx, self.t8n.fork.LegacyTransaction
         ):
             return keccak256(self.t8n.fork.encode_transaction(tx))
@@ -247,35 +249,46 @@ class Txs:
             tx_decoded = tx
 
         secret_key = hex_to_uint(json_tx["secretKey"][2:])
-        if t8n.fork.is_after_fork("ethereum.berlin"):
-            Transaction = t8n.fork.LegacyTransaction
-        else:
-            Transaction = t8n.fork.Transaction
 
-        if isinstance(tx_decoded, Transaction):
-            if t8n.fork.is_after_fork("ethereum.spurious_dragon"):
+        if t8n.fork.is_after_fork("ethereum.prague"):
+            if tx_decoded.payload.chain_id is None:
                 if protected:
-                    signing_hash = t8n.fork.signing_hash_155(
-                        tx_decoded, U64(1)
-                    )
-                    v_addend = 37  # Assuming chain_id = 1
+                    tx_decoded.payload.chain_id = 1
+                    v_addend = 35 + 2 * tx_decoded.payload.chain_id
                 else:
-                    signing_hash = t8n.fork.signing_hash_pre155(tx_decoded)
                     v_addend = 27
             else:
-                signing_hash = t8n.fork.signing_hash(tx_decoded)
-                v_addend = 27
-        elif isinstance(tx_decoded, t8n.fork.AccessListTransaction):
-            signing_hash = t8n.fork.signing_hash_2930(tx_decoded)
-            v_addend = 0
-        elif isinstance(tx_decoded, t8n.fork.FeeMarketTransaction):
-            signing_hash = t8n.fork.signing_hash_1559(tx_decoded)
-            v_addend = 0
-        elif isinstance(tx_decoded, t8n.fork.BlobTransaction):
-            signing_hash = t8n.fork.signing_hash_4844(tx_decoded)
-            v_addend = 0
+                v_addend = 0
+            signing_hash = t8n.fork.signing_hash(tx_decoded)
         else:
-            raise FatalException("Unknown transaction type")
+            if t8n.fork.is_after_fork("ethereum.berlin"):
+                Transaction = t8n.fork.LegacyTransaction
+            else:
+                Transaction = t8n.fork.Transaction
+            if isinstance(tx_decoded, Transaction):
+                if t8n.fork.is_after_fork("ethereum.spurious_dragon"):
+                    if protected:
+                        signing_hash = t8n.fork.signing_hash_155(
+                            tx_decoded, U64(1)
+                        )
+                        v_addend = 37  # Assuming chain_id = 1
+                    else:
+                        signing_hash = t8n.fork.signing_hash_pre155(tx_decoded)
+                        v_addend = 27
+                else:
+                    signing_hash = t8n.fork.signing_hash(tx_decoded)
+                    v_addend = 27
+            elif isinstance(tx_decoded, t8n.fork.AccessListTransaction):
+                signing_hash = t8n.fork.signing_hash_2930(tx_decoded)
+                v_addend = 0
+            elif isinstance(tx_decoded, t8n.fork.FeeMarketTransaction):
+                signing_hash = t8n.fork.signing_hash_1559(tx_decoded)
+                v_addend = 0
+            elif isinstance(tx_decoded, t8n.fork.BlobTransaction):
+                signing_hash = t8n.fork.signing_hash_4844(tx_decoded)
+                v_addend = 0
+            else:
+                raise FatalException("Unknown transaction type")
 
         r, s, y = secp256k1_sign(signing_hash, secret_key)
         json_tx["r"] = hex(r)

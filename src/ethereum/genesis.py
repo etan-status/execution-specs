@@ -161,6 +161,7 @@ class GenesisFork(
     set_storage: Callable[[StateT, AddressT, Bytes32, U256], object]
     state_root: Callable[[StateT], Hash32]
     root: Callable[[TrieT], object]
+    empty_transactions_root: Hash32
 
 
 def add_genesis_block(
@@ -231,7 +232,7 @@ def add_genesis_block(
         "ommers_hash": rlp.rlp_hash(()),
         "coinbase": Address(b"\0" * Address.LENGTH),
         "state_root": hardfork.state_root(chain.state),
-        "transactions_root": hardfork.root(hardfork.Trie(False, None)),
+        "transactions_root": hardfork.empty_transactions_root,
         "receipt_root": hardfork.root(hardfork.Trie(False, None)),
         "bloom": hardfork.Bloom(b"\0" * 256),
         "difficulty": genesis.difficulty,
@@ -263,6 +264,9 @@ def add_genesis_block(
     if has_field(hardfork.Header, "parent_beacon_block_root"):
         fields["parent_beacon_block_root"] = Hash32(b"\0" * 32)
 
+    if has_field(hardfork.Header, "requests_root"):
+        fields["requests_root"] = hardfork.root(hardfork.Trie(False, None))
+
     genesis_header = hardfork.Header(**fields)
 
     block_fields = {
@@ -273,6 +277,9 @@ def add_genesis_block(
 
     if has_field(hardfork.Block, "withdrawals"):
         block_fields["withdrawals"] = ()
+
+    if has_field(hardfork.Block, "requests"):
+        block_fields["requests"] = ()
 
     genesis_block = hardfork.Block(**block_fields)
 

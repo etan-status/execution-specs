@@ -36,7 +36,6 @@ from .. import rlp
 from ..base_types import U256, Bytes, Uint, slotted_freezable
 from .blocks import Receipt, Withdrawal
 from .fork_types import Account, Address, Root, encode_account
-from .transactions import LegacyTransaction
 
 # note: an empty trie (regardless of whether it is secured) has root:
 #
@@ -58,7 +57,7 @@ EMPTY_TRIE_ROOT = Root(
 )
 
 Node = Union[
-    Account, Bytes, LegacyTransaction, Receipt, Uint, U256, Withdrawal, None
+    Account, Bytes, Receipt, Uint, U256, Withdrawal, None
 ]
 K = TypeVar("K", bound=Bytes)
 V = TypeVar(
@@ -66,7 +65,6 @@ V = TypeVar(
     Optional[Account],
     Optional[Bytes],
     Bytes,
-    Optional[Union[LegacyTransaction, Bytes]],
     Optional[Union[Receipt, Bytes]],
     Optional[Union[Withdrawal, Bytes]],
     Uint,
@@ -157,7 +155,7 @@ def encode_node(node: Node, storage_root: Optional[Bytes] = None) -> Bytes:
     if isinstance(node, Account):
         assert storage_root is not None
         return encode_account(node, storage_root)
-    elif isinstance(node, (LegacyTransaction, Receipt, Withdrawal, U256)):
+    elif isinstance(node, (Receipt, Withdrawal, U256)):
         return rlp.encode(node)
     elif isinstance(node, Bytes):
         return node

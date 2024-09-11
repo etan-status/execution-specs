@@ -148,6 +148,11 @@ class ForkLoad:
         return self._module("fork").signing_hash_4844
 
     @property
+    def tx_hash(self) -> Any:
+        """tx_hash function of the fork"""
+        return self._module("fork").tx_hash
+
+    @property
     def check_transaction(self) -> Any:
         """check_transaction function of the fork"""
         return self._module("fork").check_transaction
@@ -247,6 +252,38 @@ class ForkLoad:
         return self._module("transactions").BlobTransaction
 
     @property
+    def LegacyRlpTransaction(self) -> Any:
+        """Legacy RLP transaction class of the fork"""
+        try:
+            return self._module("transactions_rlp").LegacyRlpTransaction
+        except ModuleNotFoundError as exc:
+            raise AttributeError(exc)
+
+    @property
+    def AccessListRlpTransaction(self) -> Any:
+        """Access List RLP transaction class of the fork"""
+        try:
+            return self._module("transactions_rlp").AccessListRlpTransaction
+        except ModuleNotFoundError as exc:
+            raise AttributeError(exc)
+
+    @property
+    def FeeMarketRlpTransaction(self) -> Any:
+        """Fee Market RLP transaction class of the fork"""
+        try:
+            return self._module("transactions_rlp").FeeMarketRlpTransaction
+        except ModuleNotFoundError as exc:
+            raise AttributeError(exc)
+
+    @property
+    def BlobRlpTransaction(self) -> Any:
+        """Blob RLP transaction class of the fork"""
+        try:
+            return self._module("transactions_rlp").BlobRlpTransaction
+        except ModuleNotFoundError as exc:
+            raise AttributeError(exc)
+
+    @property
     def Withdrawal(self) -> Any:
         """Withdrawal class of the fork"""
         return self._module("blocks").Withdrawal
@@ -260,6 +297,11 @@ class ForkLoad:
     def decode_transaction(self) -> Any:
         """decode_transaction function of the fork"""
         return self._module("transactions").decode_transaction
+
+    @property
+    def upgrade_rlp_tx(self) -> Any:
+        """upgrade_rlp_tx function of the fork"""
+        return self._module("transactions").upgrade_rlp_tx
 
     @property
     def State(self) -> Any:

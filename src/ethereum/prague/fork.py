@@ -16,16 +16,28 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 from ethereum.base_types import Bytes0, Bytes32
-from ethereum.crypto.elliptic_curve import SECP256K1N, secp256k1_recover
 from ethereum.crypto.hash import Hash32, keccak256
 from ethereum.exceptions import InvalidBlock
 
 from .. import rlp
 from ..base_types import U64, U256, Bytes, Uint
 from . import vm
-from .blocks import Block, Header, Log, Receipt, Withdrawal, encode_receipt
+from .blocks import (
+    Block,
+    Header,
+    Log,
+    Receipt,
+    Transactions,
+    Withdrawal,
+    encode_receipt,
+)
 from .bloom import logs_bloom
-from .fork_types import Address, Bloom, Root, VersionedHash
+from .fork_types import (
+    Address,
+    Bloom,
+    Root,
+    VersionedHash,
+)
 from .requests import (
     parse_consolidation_requests_from_system_tx,
     parse_deposit_requests_from_receipt,
@@ -50,13 +62,18 @@ from .transactions import (
     TX_CREATE_COST,
     TX_DATA_COST_PER_NON_ZERO,
     TX_DATA_COST_PER_ZERO,
-    AccessListTransaction,
-    BlobTransaction,
-    FeeMarketTransaction,
-    LegacyTransaction,
-    Transaction,
+    AnyRlpConvertedTransaction,
+    AnyTransaction,
+    RlpAccessListTransaction,
+    RlpBlobTransaction,
+    RlpFeeMarketTransaction,
     decode_transaction,
-    encode_transaction,
+    recover_rlp_tx,
+    recover_signer,
+)
+from .transactions_rlp import (
+    signing_hash_rlp,
+    tx_hash_rlp,
 )
 from .trie import Trie, root, trie_set
 from .utils.hexadecimal import hex_to_address
@@ -354,7 +371,7 @@ def validate_header(header: Header, parent_header: Header) -> None:
 
 def check_transaction(
     state: State,
-    tx: Transaction,
+    tx: AnyTransaction,
     gas_available: Uint,
     chain_id: U64,
     base_fee_per_gas: Uint,
@@ -392,56 +409,74 @@ def check_transaction(
     InvalidBlock :
         If the transaction is not includable.
     """
-    if calculate_intrinsic_cost(tx) > tx.gas:
-        raise InvalidBlock
-    if tx.nonce >= 2**64 - 1:
-        raise InvalidBlock
-    if tx.to == Bytes0(b"") and len(tx.data) > 2 * MAX_CODE_SIZE:
+    if tx.payload.chain_id is not None and tx.payload.chain_id != chain_id:
         raise InvalidBlock
 
-    if tx.gas > gas_available:
+    if calculate_intrinsic_cost(tx) > tx.payload.gas:
+        raise InvalidBlock
+    if tx.payload.nonce >= 2**64 - 1:
+        raise InvalidBlock
+    if tx.payload.to is None and len(tx.payload.input_) > 2 * MAX_CODE_SIZE:
         raise InvalidBlock
 
-    sender = recover_sender(chain_id, tx)
+    if tx.payload.gas > gas_available:
+        raise InvalidBlock
+
+    if tx.from_.address != recover_sender(tx):
+        raise InvalidBlock
+    sender = tx.from_.address
     sender_account = get_account(state, sender)
 
-    if isinstance(tx, (FeeMarketTransaction, BlobTransaction)):
-        if tx.max_fee_per_gas < tx.max_priority_fee_per_gas:
+    if isinstance(tx, (RlpFeeMarketTransaction, RlpBlobTransaction)):
+        if (
+            tx.payload.max_fees_per_gas.regular
+            < tx.payload.max_priority_fees_per_gas.regular
+        ):
             raise InvalidBlock
-        if tx.max_fee_per_gas < base_fee_per_gas:
+        if tx.payload.max_fees_per_gas.regular < base_fee_per_gas:
             raise InvalidBlock
 
         priority_fee_per_gas = min(
-            tx.max_priority_fee_per_gas,
-            tx.max_fee_per_gas - base_fee_per_gas,
+            tx.payload.max_priority_fees_per_gas.regular,
+            tx.payload.max_fees_per_gas.regular - base_fee_per_gas,
         )
         effective_gas_price = priority_fee_per_gas + base_fee_per_gas
-        max_gas_fee = tx.gas * tx.max_fee_per_gas
+        max_gas_fee = (
+            U256(tx.payload.gas) * tx.payload.max_fees_per_gas.regular
+        )
     else:
-        if tx.gas_price < base_fee_per_gas:
+        if tx.payload.max_fees_per_gas.regular < base_fee_per_gas:
             raise InvalidBlock
-        effective_gas_price = tx.gas_price
-        max_gas_fee = tx.gas * tx.gas_price
+        effective_gas_price = U256(tx.payload.max_fees_per_gas.regular)
+        max_gas_fee = (
+            U256(tx.payload.gas) * tx.payload.max_fees_per_gas.regular
+        )
 
-    if isinstance(tx, BlobTransaction):
-        if not isinstance(tx.to, Address):
+    if isinstance(tx, RlpBlobTransaction):
+        if len(tx.payload.blob_versioned_hashes) == 0:
             raise InvalidBlock
-        if len(tx.blob_versioned_hashes) == 0:
-            raise InvalidBlock
-        for blob_versioned_hash in tx.blob_versioned_hashes:
+        for blob_versioned_hash in tx.payload.blob_versioned_hashes:
             if blob_versioned_hash[0:1] != VERSIONED_HASH_VERSION_KZG:
                 raise InvalidBlock
 
-        if tx.max_fee_per_blob_gas < calculate_blob_gas_price(excess_blob_gas):
+        if (
+            tx.payload.max_fees_per_gas.blob <
+            calculate_blob_gas_price(excess_blob_gas)
+        ):
+            raise InvalidBlock
+        if tx.payload.max_priority_fees_per_gas.blob > 0:
             raise InvalidBlock
 
-        max_gas_fee += calculate_total_blob_gas(tx) * tx.max_fee_per_blob_gas
-        blob_versioned_hashes = tx.blob_versioned_hashes
+        max_gas_fee += (
+            U256(calculate_total_blob_gas(tx))
+            * tx.payload.max_fees_per_gas.blob
+        )
+        blob_versioned_hashes = tx.payload.blob_versioned_hashes
     else:
         blob_versioned_hashes = ()
-    if sender_account.nonce != tx.nonce:
+    if sender_account.nonce != tx.payload.nonce:
         raise InvalidBlock
-    if sender_account.balance < max_gas_fee + tx.value:
+    if sender_account.balance < max_gas_fee + tx.payload.value:
         raise InvalidBlock
     if sender_account.code != bytearray():
         raise InvalidBlock
@@ -450,7 +485,7 @@ def check_transaction(
 
 
 def make_receipt(
-    tx: Transaction,
+    tx: AnyTransaction,
     error: Optional[Exception],
     cumulative_gas_used: Uint,
     logs: Tuple[Log, ...],
@@ -631,7 +666,7 @@ def apply_body(
     block_gas_limit: Uint,
     block_time: U256,
     prev_randao: Bytes32,
-    transactions: Tuple[Union[LegacyTransaction, Bytes], ...],
+    transactions: Tuple[Bytes, ...],
     chain_id: U64,
     withdrawals: Tuple[Withdrawal, ...],
     parent_beacon_block_root: Root,
@@ -690,9 +725,7 @@ def apply_body(
     """
     blob_gas_used = Uint(0)
     gas_available = block_gas_limit
-    transactions_trie: Trie[
-        Bytes, Optional[Union[Bytes, LegacyTransaction]]
-    ] = Trie(secured=False, default=None)
+    transactions_list = Transactions()
     receipts_trie: Trie[Bytes, Optional[Union[Bytes, Receipt]]] = Trie(
         secured=False, default=None
     )
@@ -736,9 +769,7 @@ def apply_body(
     )
 
     for i, tx in enumerate(map(decode_transaction, transactions)):
-        trie_set(
-            transactions_trie, rlp.encode(Uint(i)), encode_transaction(tx)
-        )
+        transactions_list.append(tx)
 
         (
             sender_address,
@@ -856,7 +887,7 @@ def apply_body(
 
     return ApplyBodyOutput(
         block_gas_used,
-        root(transactions_trie),
+        Hash32(transactions_list.hash_tree_root()),
         root(receipts_trie),
         block_logs_bloom,
         state_root(state),
@@ -867,7 +898,7 @@ def apply_body(
 
 
 def process_transaction(
-    env: vm.Environment, tx: Transaction
+    env: vm.Environment, tx: AnyTransaction
 ) -> Tuple[Uint, Tuple[Log, ...], Optional[Exception]]:
     """
     Execute a transaction against the provided environment.
@@ -898,14 +929,14 @@ def process_transaction(
     sender = env.origin
     sender_account = get_account(env.state, sender)
 
-    if isinstance(tx, BlobTransaction):
+    if isinstance(tx, RlpBlobTransaction):
         blob_gas_fee = calculate_data_fee(env.excess_blob_gas, tx)
     else:
         blob_gas_fee = Uint(0)
 
-    effective_gas_fee = tx.gas * env.gas_price
+    effective_gas_fee = U256(tx.payload.gas) * env.gas_price
 
-    gas = tx.gas - calculate_intrinsic_cost(tx)
+    gas = U256(tx.payload.gas) - calculate_intrinsic_cost(tx)
     increment_nonce(env.state, sender)
 
     sender_balance_after_gas_fee = (
@@ -916,19 +947,21 @@ def process_transaction(
     preaccessed_addresses = set()
     preaccessed_storage_keys = set()
     preaccessed_addresses.add(env.coinbase)
-    if isinstance(
-        tx, (AccessListTransaction, FeeMarketTransaction, BlobTransaction)
-    ):
-        for address, keys in tx.access_list:
+    if isinstance(tx, (
+        RlpAccessListTransaction,
+        RlpFeeMarketTransaction,
+        RlpBlobTransaction
+    )):
+        for address, keys in tx.payload.access_list:
             preaccessed_addresses.add(address)
             for key in keys:
                 preaccessed_storage_keys.add((address, key))
 
     message = prepare_message(
         sender,
-        tx.to,
-        tx.value,
-        tx.data,
+        Address(tx.payload.to) if tx.payload.to is not None else Bytes0(),
+        U256(tx.payload.value),
+        tx.payload.input_,
         gas,
         env,
         preaccessed_addresses=frozenset(preaccessed_addresses),
@@ -937,14 +970,14 @@ def process_transaction(
 
     output = process_message_call(message, env)
 
-    gas_used = tx.gas - output.gas_left
+    gas_used = tx.payload.gas - output.gas_left
     gas_refund = min(gas_used // 5, output.refund_counter)
     gas_refund_amount = (output.gas_left + gas_refund) * env.gas_price
 
-    # For non-1559 transactions env.gas_price == tx.gas_price
+    # For non-1559 tx env.gas_price == tx.payload.max_fees_per_gas.regular
     priority_fee_per_gas = env.gas_price - env.base_fee_per_gas
     transaction_fee = (
-        tx.gas - output.gas_left - gas_refund
+        U256(tx.payload.gas) - output.gas_left - gas_refund
     ) * priority_fee_per_gas
 
     total_gas_used = gas_used - gas_refund
@@ -974,7 +1007,7 @@ def process_transaction(
     return total_gas_used, output.logs, output.error
 
 
-def calculate_intrinsic_cost(tx: Transaction) -> Uint:
+def calculate_intrinsic_cost(tx: AnyTransaction) -> Uint:
     """
     Calculates the gas that is charged before execution is started.
 
@@ -999,240 +1032,63 @@ def calculate_intrinsic_cost(tx: Transaction) -> Uint:
     """
     data_cost = 0
 
-    for byte in tx.data:
+    for byte in tx.payload.input_:
         if byte == 0:
             data_cost += TX_DATA_COST_PER_ZERO
         else:
             data_cost += TX_DATA_COST_PER_NON_ZERO
 
-    if tx.to == Bytes0(b""):
-        create_cost = TX_CREATE_COST + int(init_code_cost(Uint(len(tx.data))))
+    if tx.payload.to is None:
+        create_cost = TX_CREATE_COST + int(
+            init_code_cost(Uint(len(tx.payload.input_))))
     else:
         create_cost = 0
 
     access_list_cost = 0
-    if isinstance(
-        tx, (AccessListTransaction, FeeMarketTransaction, BlobTransaction)
-    ):
-        for _address, keys in tx.access_list:
+    if isinstance(tx, (
+        RlpAccessListTransaction,
+        RlpFeeMarketTransaction,
+        RlpBlobTransaction,
+    )):
+        for _address, keys in tx.payload.access_list:
             access_list_cost += TX_ACCESS_LIST_ADDRESS_COST
             access_list_cost += len(keys) * TX_ACCESS_LIST_STORAGE_KEY_COST
 
     return Uint(TX_BASE_COST + data_cost + create_cost + access_list_cost)
 
 
-def recover_sender(chain_id: U64, tx: Transaction) -> Address:
+def recover_sender(tx: AnyTransaction) -> Address:
     """
     Extracts the sender address from a transaction.
 
-    The v, r, and s values are the three parts that make up the signature
-    of a transaction. In order to recover the sender of a transaction the two
-    components needed are the signature (``v``, ``r``, and ``s``) and the
-    signing hash of the transaction. The sender's public key can be obtained
-    with these two values and therefore the sender address can be retrieved.
+    In order to recover the sender of a transaction the two components needed
+    are the signature and the signing hash of the transaction. The sender's
+    public key can be obtained with these two values and therefore the sender
+    address can be retrieved.
 
     Parameters
     ----------
     tx :
         Transaction of interest.
-    chain_id :
-        ID of the executing chain.
 
     Returns
     -------
     sender : `ethereum.fork_types.Address`
         The address of the account that signed the transaction.
     """
-    r, s = tx.r, tx.s
-    if 0 >= r or r >= SECP256K1N:
-        raise InvalidBlock
-    if 0 >= s or s > SECP256K1N // 2:
-        raise InvalidBlock
-
-    if isinstance(tx, LegacyTransaction):
-        v = tx.v
-        if v == 27 or v == 28:
-            public_key = secp256k1_recover(
-                r, s, v - 27, signing_hash_pre155(tx)
-            )
-        else:
-            if v != 35 + chain_id * 2 and v != 36 + chain_id * 2:
-                raise InvalidBlock
-            public_key = secp256k1_recover(
-                r, s, v - 35 - chain_id * 2, signing_hash_155(tx, chain_id)
-            )
-    elif isinstance(tx, AccessListTransaction):
-        public_key = secp256k1_recover(
-            r, s, tx.y_parity, signing_hash_2930(tx)
-        )
-    elif isinstance(tx, FeeMarketTransaction):
-        public_key = secp256k1_recover(
-            r, s, tx.y_parity, signing_hash_1559(tx)
-        )
-    elif isinstance(tx, BlobTransaction):
-        public_key = secp256k1_recover(
-            r, s, tx.y_parity, signing_hash_4844(tx)
-        )
-
-    return Address(keccak256(public_key)[12:32])
+    return recover_signer(tx.from_.secp256k1_signature, signing_hash(tx))
 
 
-def signing_hash_pre155(tx: LegacyTransaction) -> Hash32:
-    """
-    Compute the hash of a transaction used in a legacy (pre EIP 155) signature.
-
-    Parameters
-    ----------
-    tx :
-        Transaction of interest.
-
-    Returns
-    -------
-    hash : `ethereum.crypto.hash.Hash32`
-        Hash of the transaction.
-    """
-    return keccak256(
-        rlp.encode(
-            (
-                tx.nonce,
-                tx.gas_price,
-                tx.gas,
-                tx.to,
-                tx.value,
-                tx.data,
-            )
-        )
-    )
+def signing_hash(tx: AnyTransaction) -> Hash32:
+    if isinstance(tx, AnyRlpConvertedTransaction):
+        tx = recover_rlp_tx(tx)
+        return signing_hash_rlp(tx)
 
 
-def signing_hash_155(tx: LegacyTransaction, chain_id: U64) -> Hash32:
-    """
-    Compute the hash of a transaction used in a EIP 155 signature.
-
-    Parameters
-    ----------
-    tx :
-        Transaction of interest.
-    chain_id :
-        The id of the current chain.
-
-    Returns
-    -------
-    hash : `ethereum.crypto.hash.Hash32`
-        Hash of the transaction.
-    """
-    return keccak256(
-        rlp.encode(
-            (
-                tx.nonce,
-                tx.gas_price,
-                tx.gas,
-                tx.to,
-                tx.value,
-                tx.data,
-                chain_id,
-                Uint(0),
-                Uint(0),
-            )
-        )
-    )
-
-
-def signing_hash_2930(tx: AccessListTransaction) -> Hash32:
-    """
-    Compute the hash of a transaction used in a EIP 2930 signature.
-
-    Parameters
-    ----------
-    tx :
-        Transaction of interest.
-
-    Returns
-    -------
-    hash : `ethereum.crypto.hash.Hash32`
-        Hash of the transaction.
-    """
-    return keccak256(
-        b"\x01"
-        + rlp.encode(
-            (
-                tx.chain_id,
-                tx.nonce,
-                tx.gas_price,
-                tx.gas,
-                tx.to,
-                tx.value,
-                tx.data,
-                tx.access_list,
-            )
-        )
-    )
-
-
-def signing_hash_1559(tx: FeeMarketTransaction) -> Hash32:
-    """
-    Compute the hash of a transaction used in a EIP 1559 signature.
-
-    Parameters
-    ----------
-    tx :
-        Transaction of interest.
-
-    Returns
-    -------
-    hash : `ethereum.crypto.hash.Hash32`
-        Hash of the transaction.
-    """
-    return keccak256(
-        b"\x02"
-        + rlp.encode(
-            (
-                tx.chain_id,
-                tx.nonce,
-                tx.max_priority_fee_per_gas,
-                tx.max_fee_per_gas,
-                tx.gas,
-                tx.to,
-                tx.value,
-                tx.data,
-                tx.access_list,
-            )
-        )
-    )
-
-
-def signing_hash_4844(tx: BlobTransaction) -> Hash32:
-    """
-    Compute the hash of a transaction used in a EIP-4844 signature.
-
-    Parameters
-    ----------
-    tx :
-        Transaction of interest.
-
-    Returns
-    -------
-    hash : `ethereum.crypto.hash.Hash32`
-        Hash of the transaction.
-    """
-    return keccak256(
-        b"\x03"
-        + rlp.encode(
-            (
-                tx.chain_id,
-                tx.nonce,
-                tx.max_priority_fee_per_gas,
-                tx.max_fee_per_gas,
-                tx.gas,
-                tx.to,
-                tx.value,
-                tx.data,
-                tx.access_list,
-                tx.max_fee_per_blob_gas,
-                tx.blob_versioned_hashes,
-            )
-        )
-    )
+def tx_hash(tx: AnyTransaction) -> Hash32:
+    if isinstance(tx, AnyRlpConvertedTransaction):
+        tx = recover_rlp_tx(tx)
+        return tx_hash_rlp(tx)
 
 
 def compute_header_hash(header: Header) -> Hash32:

@@ -19,7 +19,7 @@ from ethereum.trace import GasAndRefund, evm_trace
 from ethereum.utils.numeric import ceil32, taylor_exponential
 
 from ..blocks import Header
-from ..transactions import BlobTransaction, Transaction
+from ..transactions import AnyTransaction, RlpBlobTransaction
 from . import Evm
 from .exceptions import OutOfGasError
 
@@ -292,7 +292,7 @@ def calculate_excess_blob_gas(parent_header: Header) -> U64:
         return parent_blob_gas - TARGET_BLOB_GAS_PER_BLOCK
 
 
-def calculate_total_blob_gas(tx: Transaction) -> Uint:
+def calculate_total_blob_gas(tx: AnyTransaction) -> Uint:
     """
     Calculate the total blob gas for a transaction.
 
@@ -306,8 +306,8 @@ def calculate_total_blob_gas(tx: Transaction) -> Uint:
     total_blob_gas: `ethereum.base_types.Uint`
         The total blob gas for the transaction.
     """
-    if isinstance(tx, BlobTransaction):
-        return GAS_PER_BLOB * len(tx.blob_versioned_hashes)
+    if isinstance(tx, RlpBlobTransaction):
+        return GAS_PER_BLOB * len(tx.payload.blob_versioned_hashes)
     else:
         return Uint(0)
 
@@ -333,7 +333,7 @@ def calculate_blob_gas_price(excess_blob_gas: U64) -> Uint:
     )
 
 
-def calculate_data_fee(excess_blob_gas: U64, tx: Transaction) -> Uint:
+def calculate_data_fee(excess_blob_gas: U64, tx: AnyTransaction) -> Uint:
     """
     Calculate the blob data fee for a transaction.
 

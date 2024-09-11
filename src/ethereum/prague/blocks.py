@@ -11,6 +11,8 @@ chain.
 from dataclasses import dataclass
 from typing import Tuple, Union
 
+from remerkleable.complex import List
+
 from .. import rlp
 from ..base_types import (
     U64,
@@ -24,12 +26,18 @@ from ..base_types import (
 from ..crypto.hash import Hash32
 from .fork_types import Address, Bloom, Root
 from .transactions import (
-    AccessListTransaction,
-    BlobTransaction,
-    FeeMarketTransaction,
-    LegacyTransaction,
+    AnyTransaction,
+    RlpAccessListTransaction,
+    RlpBlobTransaction,
+    RlpFeeMarketTransaction,
     Transaction,
 )
+
+
+MAX_TRANSACTIONS_PER_PAYLOAD = U64(2**20)
+
+
+Transactions = List[Transaction, MAX_TRANSACTIONS_PER_PAYLOAD]
 
 
 @slotted_freezable
@@ -83,7 +91,7 @@ class Block:
     """
 
     header: Header
-    transactions: Tuple[Union[Bytes, LegacyTransaction], ...]
+    transactions: Tuple[Bytes, ...]
     ommers: Tuple[Header, ...]
     withdrawals: Tuple[Withdrawal, ...]
     requests: Tuple[Bytes, ...]
@@ -114,15 +122,15 @@ class Receipt:
     logs: Tuple[Log, ...]
 
 
-def encode_receipt(tx: Transaction, receipt: Receipt) -> Union[Bytes, Receipt]:
+def encode_receipt(tx: AnyTransaction, receipt: Receipt) -> Union[Bytes, Receipt]:
     """
     Encodes a receipt.
     """
-    if isinstance(tx, AccessListTransaction):
+    if isinstance(tx, RlpAccessListTransaction):
         return b"\x01" + rlp.encode(receipt)
-    elif isinstance(tx, FeeMarketTransaction):
+    elif isinstance(tx, RlpFeeMarketTransaction):
         return b"\x02" + rlp.encode(receipt)
-    elif isinstance(tx, BlobTransaction):
+    elif isinstance(tx, RlpBlobTransaction):
         return b"\x03" + rlp.encode(receipt)
     else:
         return receipt
@@ -133,7 +141,7 @@ def decode_receipt(receipt: Union[Bytes, Receipt]) -> Receipt:
     Decodes a receipt.
     """
     if isinstance(receipt, Bytes):
-        assert receipt[0] in (b"\x01", b"\x02", b"\x03")
+        assert receipt[0] in (0x01, 0x02, 0x03)
         return rlp.decode_to(Receipt, receipt[1:])
     else:
         return receipt

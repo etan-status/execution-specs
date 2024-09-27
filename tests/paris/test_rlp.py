@@ -15,11 +15,6 @@ from ethereum.paris.transactions import (
 from ethereum.paris.utils.hexadecimal import hex_to_address
 from ethereum.utils.hexadecimal import hex_to_bytes256
 
-sample_r = U256.from_be_bytes(bytes.fromhex(
-    "a4be86c16c6d3a2b907660b24187d0b30b69f6db3e6e8e7a7bb1183a4706d454"))
-sample_s = U256.from_be_bytes(bytes.fromhex(
-    "28aba84cdee6059dde41620422959d01da4f6cfff21a9b97036db018f1d815f6"))
-
 hash1 = keccak256(b"foo")
 hash2 = keccak256(b"bar")
 hash3 = keccak256(b"baz")
@@ -51,9 +46,9 @@ legacy_transaction = LegacyTransaction(
     Bytes0(),
     U256(4),
     Bytes(b"foo"),
-    U256(28),
-    sample_r,
-    sample_s,
+    U256(27),
+    U256(5),
+    U256(6),
 )
 
 access_list_transaction = AccessListTransaction(
@@ -65,9 +60,9 @@ access_list_transaction = AccessListTransaction(
     U256(4),
     Bytes(b"bar"),
     ((address1, (hash1, hash2)), (address2, tuple())),
-    U256(1),
-    sample_r,
-    sample_s,
+    U256(27),
+    U256(5),
+    U256(6),
 )
 
 transaction_1559 = FeeMarketTransaction(
@@ -80,9 +75,9 @@ transaction_1559 = FeeMarketTransaction(
     U256(4),
     Bytes(b"bar"),
     ((address1, (hash1, hash2)), (address2, tuple())),
-    U256(1),
-    sample_r,
-    sample_s,
+    U256(27),
+    U256(5),
+    U256(6),
 )
 
 

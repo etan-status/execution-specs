@@ -15,12 +15,13 @@ Entry point for the Ethereum specification.
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
-from ethereum.base_types import Bytes0, Bytes32
+from ethereum.base_types import Bytes32
+from ethereum.crypto import InvalidSignature
 from ethereum.crypto.hash import Hash32, keccak256
 from ethereum.exceptions import InvalidBlock
 
 from .. import rlp
-from ..base_types import U64, U256, Bytes, Uint
+from ..base_types import U64, U256, Bytes, Bytes0, Uint
 from . import vm
 from .blocks import (
     Block,
@@ -32,12 +33,7 @@ from .blocks import (
     encode_receipt,
 )
 from .bloom import logs_bloom
-from .fork_types import (
-    Address,
-    Bloom,
-    Root,
-    VersionedHash,
-)
+from .fork_types import Address, Bloom, Root, VersionedHash
 from .requests import (
     parse_consolidation_requests_from_system_tx,
     parse_deposit_requests_from_receipt,
@@ -64,9 +60,11 @@ from .transactions import (
     TX_DATA_COST_PER_ZERO,
     AnyRlpConvertedTransaction,
     AnyTransaction,
+    Authorization,
     RlpAccessListTransaction,
     RlpBlobTransaction,
     RlpFeeMarketTransaction,
+    RlpSetCodeTransaction,
     decode_transaction,
     recover_rlp_tx,
     recover_signer,
@@ -79,6 +77,10 @@ from .trie import Trie, root, trie_set
 from .utils.hexadecimal import hex_to_address
 from .utils.message import prepare_message
 from .vm import Message
+from .vm.eoa_delegation import (
+    PER_EMPTY_ACCOUNT_COST,
+    is_valid_delegation,
+)
 from .vm.gas import (
     calculate_blob_gas_price,
     calculate_data_fee,
@@ -418,16 +420,16 @@ def check_transaction(
         raise InvalidBlock
     if tx.payload.to is None and len(tx.payload.input_) > 2 * MAX_CODE_SIZE:
         raise InvalidBlock
-
     if tx.payload.gas > gas_available:
         raise InvalidBlock
 
-    if tx.from_.address != recover_sender(tx):
-        raise InvalidBlock
-    sender = tx.from_.address
-    sender_account = get_account(state, sender)
+    sender_address = recover_sender(tx)
 
-    if isinstance(tx, (RlpFeeMarketTransaction, RlpBlobTransaction)):
+    sender_account = get_account(state, sender_address)
+
+    if isinstance(
+        tx, (RlpFeeMarketTransaction, RlpBlobTransaction, RlpSetCodeTransaction)
+    ):
         if (
             tx.payload.max_fees_per_gas.regular
             < tx.payload.max_priority_fees_per_gas.regular
@@ -464,8 +466,6 @@ def check_transaction(
             calculate_blob_gas_price(excess_blob_gas)
         ):
             raise InvalidBlock
-        if tx.payload.max_priority_fees_per_gas.blob > 0:
-            raise InvalidBlock
 
         max_gas_fee += (
             U256(calculate_total_blob_gas(tx))
@@ -474,14 +474,21 @@ def check_transaction(
         blob_versioned_hashes = tx.payload.blob_versioned_hashes
     else:
         blob_versioned_hashes = ()
+
+    if isinstance(tx, RlpSetCodeTransaction):
+        if not any(tx.payload.authorization_list):
+            raise InvalidBlock
+
     if sender_account.nonce != tx.payload.nonce:
         raise InvalidBlock
     if sender_account.balance < max_gas_fee + tx.payload.value:
         raise InvalidBlock
-    if sender_account.code != bytearray():
+    if sender_account.code != bytearray() and not is_valid_delegation(
+        sender_account.code
+    ):
         raise InvalidBlock
 
-    return sender, effective_gas_price, blob_versioned_hashes
+    return sender_address, effective_gas_price, blob_versioned_hashes
 
 
 def make_receipt(
@@ -622,6 +629,7 @@ def process_system_transaction(
         accessed_addresses=set(),
         accessed_storage_keys=set(),
         parent_evm=None,
+        authorizations=(),
     )
 
     system_tx_env = vm.Environment(
@@ -947,15 +955,23 @@ def process_transaction(
     preaccessed_addresses = set()
     preaccessed_storage_keys = set()
     preaccessed_addresses.add(env.coinbase)
-    if isinstance(tx, (
-        RlpAccessListTransaction,
-        RlpFeeMarketTransaction,
-        RlpBlobTransaction
-    )):
+    if isinstance(
+        tx,
+        (
+            RlpAccessListTransaction,
+            RlpFeeMarketTransaction,
+            RlpBlobTransaction,
+            RlpSetCodeTransaction,
+        ),
+    ):
         for address, keys in tx.payload.access_list:
             preaccessed_addresses.add(address)
             for key in keys:
                 preaccessed_storage_keys.add((address, key))
+
+    authorizations: Tuple[Authorization, ...] = ()
+    if isinstance(tx, RlpSetCodeTransaction):
+        authorizations = tuple(tx.payload.authorization_list)
 
     message = prepare_message(
         sender,
@@ -966,6 +982,7 @@ def process_transaction(
         env,
         preaccessed_addresses=frozenset(preaccessed_addresses),
         preaccessed_storage_keys=frozenset(preaccessed_storage_keys),
+        authorizations=authorizations,
     )
 
     output = process_message_call(message, env)
@@ -1045,16 +1062,26 @@ def calculate_intrinsic_cost(tx: AnyTransaction) -> Uint:
         create_cost = 0
 
     access_list_cost = 0
-    if isinstance(tx, (
-        RlpAccessListTransaction,
-        RlpFeeMarketTransaction,
-        RlpBlobTransaction,
-    )):
+    if isinstance(
+        tx,
+        (
+            RlpAccessListTransaction,
+            RlpFeeMarketTransaction,
+            RlpBlobTransaction,
+            RlpSetCodeTransaction,
+        ),
+    ):
         for _address, keys in tx.payload.access_list:
             access_list_cost += TX_ACCESS_LIST_ADDRESS_COST
             access_list_cost += len(keys) * TX_ACCESS_LIST_STORAGE_KEY_COST
 
-    return Uint(TX_BASE_COST + data_cost + create_cost + access_list_cost)
+    auth_cost = 0
+    if isinstance(tx, RlpSetCodeTransaction):
+        auth_cost += PER_EMPTY_ACCOUNT_COST * len(tx.payload.authorization_list)
+
+    return Uint(
+        TX_BASE_COST + data_cost + create_cost + access_list_cost + auth_cost
+    )
 
 
 def recover_sender(tx: AnyTransaction) -> Address:
@@ -1076,7 +1103,10 @@ def recover_sender(tx: AnyTransaction) -> Address:
     sender : `ethereum.fork_types.Address`
         The address of the account that signed the transaction.
     """
-    return recover_signer(tx.from_.secp256k1_signature, signing_hash(tx))
+    try:
+        return recover_signer(tx.signature.secp256k1, signing_hash(tx))
+    except InvalidSignature as e:
+        raise InvalidBlock from e
 
 
 def signing_hash(tx: AnyTransaction) -> Hash32:

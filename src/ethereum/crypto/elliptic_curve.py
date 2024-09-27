@@ -7,46 +7,60 @@ from typing import Generic, Tuple, Type, TypeVar
 
 import coincurve
 
-from ..base_types import U256, Bytes, Bytes65
+from ..base_types import U8, U256, Bytes, Bytes65
+from . import InvalidSignature
 from .finite_field import Field
 from .hash import Hash32
 
+SECP256K1B = 7
+SECP256K1P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 SECP256K1N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
 F = TypeVar("F", bound=Field)
 T = TypeVar("T", bound="EllipticCurve")
 
 
-def secp256k1_pack(r: U256, s: U256, y_parity: bool) -> Bytes65:
-    return (
-        r.to_be_bytes32() + s.to_be_bytes32()
-        + bytes([0x01 if y_parity else 0x00])
-    )
+def secp256k1_pack(r: U256, s: U256, y_parity: U8) -> Bytes65:
+    return r.to_be_bytes32() + s.to_be_bytes32() + bytes([y_parity])
 
 
-def secp256k1_unpack(signature: Bytes65) -> Tuple[U256, U256, bool]:
+def secp256k1_unpack(signature: Bytes65) -> Tuple[U256, U256, U8]:
     r = U256.from_be_bytes(signature[0:32])
     s = U256.from_be_bytes(signature[32:64])
-    y_parity = signature[64] != 0
+    y_parity = signature[64]
     return (r, s, y_parity)
 
 
 def secp256k1_validate(signature: Bytes65):
-    if signature[64] not in (0, 1):
-        raise ValueError("Invalid y_parity")
-    r, s, _ = secp256k1_unpack(signature)
+    r, s, y_parity = secp256k1_unpack(signature)
+    if y_parity not in (0, 1):
+        raise InvalidSignature("Invalid y_parity")
     if 0 >= r or r >= SECP256K1N:
-        raise ValueError("Invalid r")
+        raise InvalidSignature("Invalid r")
     if 0 >= s or s > SECP256K1N // 2:
-        raise ValueError("Invalid s")
+        raise InvalidSignature("Invalid s")
+
+    is_square = pow(
+        pow(r, 3, SECP256K1P) + SECP256K1B, (SECP256K1P - 1) // 2, SECP256K1P
+    )
+    if is_square != 1:
+        raise InvalidSignature(
+            "r is not the x-coordinate of a point on the secp256k1 curve"
+        )
 
 
 def secp256k1_recover_packed(signature: Bytes65, msg_hash: Hash32) -> Bytes:
-    public_key = coincurve.PublicKey.from_signature_and_message(
-        bytes(signature), msg_hash, hasher=None
-    )
-    public_key = public_key.format(compressed=False)[1:]
-    return public_key
+    # If the recovery algorithm returns the point at infinity,
+    # the signature is considered invalid
+    # the below function will raise a ValueError.
+    try:
+        public_key = coincurve.PublicKey.from_signature_and_message(
+            bytes(signature), msg_hash, hasher=None
+        )
+    except ValueError as e:
+        raise InvalidSignature from e
+
+    return public_key.format(compressed=False)[1:]
 
 
 def secp256k1_recover(r: U256, s: U256, v: U256, msg_hash: Hash32) -> Bytes:
@@ -69,7 +83,9 @@ def secp256k1_recover(r: U256, s: U256, v: U256, msg_hash: Hash32) -> Bytes:
     public_key : `ethereum.base_types.Bytes`
         Recovered public key.
     """
-    return secp256k1_recover_packed(secp256k1_pack(r, s, v != 0), msg_hash)
+    if v > U8.MAX_VALUE:
+        raise InvalidSignature("y_parity out of range")
+    return secp256k1_recover_packed(secp256k1_pack(r, s, U8(v)), msg_hash)
 
 
 class EllipticCurve(Generic[F]):

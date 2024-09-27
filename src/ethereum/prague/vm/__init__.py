@@ -22,6 +22,7 @@ from ethereum.crypto.hash import Hash32
 from ..blocks import Log
 from ..fork_types import Address, VersionedHash
 from ..state import State, TransientStorage, account_exists_and_is_empty
+from ..transactions import Authorization
 from .precompiled_contracts import RIPEMD160_ADDRESS
 
 __all__ = ("Environment", "Evm", "Message")
@@ -71,6 +72,7 @@ class Message:
     accessed_addresses: Set[Address]
     accessed_storage_keys: Set[Tuple[Address, Bytes32]]
     parent_evm: Optional["Evm"]
+    authorizations: Tuple[Authorization, ...]
 
 
 @dataclass

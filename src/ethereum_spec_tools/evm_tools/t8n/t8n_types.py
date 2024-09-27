@@ -287,6 +287,9 @@ class Txs:
             elif isinstance(tx_decoded, t8n.fork.BlobTransaction):
                 signing_hash = t8n.fork.signing_hash_4844(tx_decoded)
                 v_addend = 0
+            elif isinstance(tx_decoded, t8n.fork.SetCodeTransaction):
+                signing_hash = t8n.fork.signing_hash_7702(tx_decoded)
+                v_addend = 0
             else:
                 raise FatalException("Unknown transaction type")
 
@@ -324,6 +327,22 @@ class Result:
         data = {}
         for attr in request.__annotations__:
             data[attr] = encode_to_hex(getattr(request, attr))
+
+        if "public_key" in data:
+            data["pubkey"] = data["public_key"]
+            del data["public_key"]
+
+        if "validator_public_key" in data:
+            data["validator_pubkey"] = data["validator_public_key"]
+            del data["validator_public_key"]
+
+        if "target_public_key" in data:
+            data["target_pubkey"] = data["target_public_key"]
+            del data["target_public_key"]
+
+        if "source_public_key" in data:
+            data["source_pubkey"] = data["source_public_key"]
+            del data["source_public_key"]
 
         return data
 

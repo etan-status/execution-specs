@@ -259,11 +259,108 @@ def signing_hash_4844(tx: BlobRlpTransaction) -> Hash32:
     )
 
 
+@slotted_freezable
+@dataclass
+class SetCodeRlpAuthorization:
+    """
+    The authorization for a set code transaction.
+    """
+
+    chain_id: U64
+    address: Address
+    nonce: U64
+    y_parity: U256
+    r: U256
+    s: U256
+
+
+def auth_hash_7702(authorization: SetCodeRlpAuthorization) -> Hash32:
+    """
+    Compute the hash of an authorization used in a EIP-7702 signature.
+
+    Parameters
+    ----------
+    authorization :
+        Authorization of interest.
+
+    Returns
+    -------
+    hash : `ethereum.crypto.hash.Hash32`
+        Hash of the Authorization.
+    """
+    return keccak256(
+        b"\x05"
+        + rlp.encode(
+            (
+                authorization.chain_id,
+                authorization.address,
+                authorization.nonce,
+            )
+        )
+    )
+
+
+@slotted_freezable
+@dataclass
+class SetCodeRlpTransaction:
+    """
+    The transaction type added in EIP-7702.
+    """
+
+    chain_id: U64
+    nonce: U64
+    max_priority_fee_per_gas: Uint
+    max_fee_per_gas: Uint
+    gas: Uint
+    to: Address
+    value: U256
+    data: Bytes
+    access_list: Tuple[Tuple[Address, Tuple[Bytes32, ...]], ...]
+    authorizations: Tuple[SetCodeRlpAuthorization, ...]
+    y_parity: U256
+    r: U256
+    s: U256
+
+
+def signing_hash_7702(tx: SetCodeRlpTransaction) -> Hash32:
+    """
+    Compute the hash of a transaction used in a EIP-7702 signature.
+
+    Parameters
+    ----------
+    tx :
+        Transaction of interest.
+
+    Returns
+    -------
+    hash : `ethereum.crypto.hash.Hash32`
+        Hash of the transaction.
+    """
+    return keccak256(
+        b"\x04"
+        + rlp.encode(
+            (
+                tx.chain_id,
+                tx.nonce,
+                tx.max_priority_fee_per_gas,
+                tx.max_fee_per_gas,
+                tx.gas,
+                tx.to,
+                tx.value,
+                tx.data,
+                tx.access_list,
+                tx.authorizations,
+            )
+        )
+    )
+
+
 AnyRlpTransaction = Union[
     LegacyRlpTransaction,
     AccessListRlpTransaction,
     FeeMarketRlpTransaction,
     BlobRlpTransaction,
+    SetCodeRlpTransaction
 ]
 
 
@@ -280,6 +377,8 @@ def signing_hash_rlp(tx: AnyRlpTransaction) -> Hash32:
         return signing_hash_1559(tx)
     elif isinstance(tx, BlobRlpTransaction):
         return signing_hash_4844(tx)
+    elif isinstance(tx, SetCodeRlpTransaction):
+        return signing_hash_7702(tx)
 
 
 def tx_hash_rlp(tx: AnyRlpTransaction) -> Hash32:
@@ -291,3 +390,15 @@ def tx_hash_rlp(tx: AnyRlpTransaction) -> Hash32:
         return keccak256(b"\x02" + rlp.encode(tx))
     elif isinstance(tx, BlobRlpTransaction):
         return keccak256(b"\x03" + rlp.encode(tx))
+    elif isinstance(tx, SetCodeRlpTransaction):
+        return keccak256(b"\x04" + rlp.encode(tx))
+
+
+AnyRlpAuthorization = Union[
+    SetCodeRlpAuthorization
+]
+
+
+def auth_hash_rlp(authorization: AnyRlpAuthorization) -> Hash32:
+    if isinstance(authorization, SetCodeRlpAuthorization):
+        return auth_hash_7702(authorization)
